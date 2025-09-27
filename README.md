@@ -83,26 +83,3 @@ The script is designed to be self-contained and easy to set up.
 
 This tool is designed for **defensive and educational purposes only**. The creator, Yousuf Alkhanjari, is not responsible for any misuse of this script. Always have backups of your important data and use these powerful tools responsibly.
 =======
-
-Navigate into the directory:
-cd NSA-Security-Toolkit
-
-
-Make the script executable:
-chmod +x nsa.sh
-
-
-How to Use
-Run the script:
-./nsa.sh
-
-
-First-Time Setup:
-The script will detect if it's the first time being run.
-It will check for all required software packages and ask for your permission to install any that are missing.
-It will then guide you through an initial setup for the firewall and antivirus database.
-Finally, it will prompt you to create the initial admin user account.
-Login: After the first run, you will always be greeted by a secure login prompt.
-Navigate the Menus: Simply use the number keys to navigate through the various tools and options.
-Disclaimer
-This tool is designed for defensive and educational purposes only. The creator, Yousuf Alkhanjari, is not responsible for any misuse of this script. Always have backups of your important data and use these powerful tools responsibly.
