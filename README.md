@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 # **NSA (Network Security Assistant) Toolkit**
 
 **Creator:** Yousuf Alkhanjari
@@ -149,4 +148,3 @@ Login: After the first run, you will always be greeted by a secure login prompt.
 Navigate the Menus: Simply use the number keys to navigate through the various tools and options.
 Disclaimer
 This tool is designed for defensive and educational purposes only. The creator, Yousuf Alkhanjari, is not responsible for any misuse of this script. Always have backups of your important data and use these powerful tools responsibly.
->>>>>>> origin/main
