@@ -2,7 +2,7 @@
 
 # NSA (Network Security Assistant) Helper Script
 # A powerful tool to manage defensive security and privacy on Linux.
-# Credit: Yousuf Alkhanjari
+# Created by Yousuf Alkhanjari
 
 # --- Configuration ---
 SCRIPT_DIR="/root/.nsa"
