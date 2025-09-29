@@ -75,7 +75,8 @@ dependency_checker() {
     fi
 
     local missing_packages=()
-    local packages=("ufw" "openvpn" "macchanger" "chkrootkit" "clamav" "clamav-daemon" "gnupg" "nmap" "htop" "nload" "speedtest-cli" "tor" "curl" "sqlite3")
+    # Added 'lynis' for advanced security auditing
+    local packages=("ufw" "openvpn" "macchanger" "chkrootkit" "clamav" "clamav-daemon" "gnupg" "nmap" "htop" "nload" "speedtest-cli" "tor" "curl" "sqlite3" "pv" "acpi" "lynis")
     
     echo -e "${CYAN}First time setup: Checking for required packages...${NC}"
     for pkg in "${packages[@]}"; do
@@ -106,7 +107,53 @@ dependency_checker() {
     echo -e "${GREEN}All required packages are installed and initial setup is complete.${NC}"
 }
 
-# --- Helper function to run commands in a new terminal ---
+# --- UI & Helper Functions ---
+show_ascii_logo() {
+    echo -e "${CYAN}"
+    echo '  _   _   ____    _   '
+    echo ' | \ | | / ___|  / \  '
+    echo ' |  \| | \___ \ / _ \ '
+    echo ' | |\  |  ___) / ___ \'
+    echo ' |_| \_| |____/_/   \_\'
+    echo '        sec_shell     '
+    echo -e "${NC}"
+}
+
+get_battery_status() {
+    if command -v acpi &>/dev/null; then
+        local status=$(acpi 2>/dev/null)
+        if [ -n "$status" ]; then
+            local percent=$(echo "$status" | grep -oP '[0-9]+(?=%)')
+            local state=$(echo "$status" | grep -oP '(Charging|Discharging|Full)')
+            local symbol="🔋"
+            if [[ "$state" == "Charging" ]]; then symbol="⚡️"; fi
+            if [[ "$state" == "Full" ]]; then symbol="🔌"; fi
+
+            local color=$GREEN
+            if [ "$percent" -lt 20 ]; then color=$RED; 
+            elif [ "$percent" -lt 50 ]; then color=$YELLOW;
+            fi
+
+            echo -e "| Battery: ${color}${symbol} ${percent}%${NC} "
+        fi
+    fi
+}
+
+spinner() {
+    local pid=$1
+    local msg=${2:-"Processing..."}
+    local delay=0.1
+    local spinstr='|/-\'
+    while ps -p $pid > /dev/null; do
+        local temp=${spinstr#?}
+        printf " ${CYAN}[%c]${NC} %s" "$spinstr" "$msg"
+        local spinstr=$temp${spinstr%"$temp"}
+        sleep $delay
+        printf "\r"
+    done
+    printf " \r"
+}
+
 run_in_new_terminal() {
     local cmd_to_run="$1"
     local title="$2"
@@ -406,7 +453,8 @@ fi
 show_quick_status() {
     echo -e "\n${YELLOW}--- NSA Quick Status Dashboard ---${NC}"
     echo -e "${CYAN}Public IP & Location:${NC}"
-    curl -s ipinfo.io | grep -E "ip|city|region|country" | sed 's/"//g; s/,//' | awk '{print "  " $1 " " $2}'
+    (curl -s ipinfo.io | grep -E "ip|city|region|country" | sed 's/"//g; s/,//' | awk '{print "  " $1 " " $2}') &
+    spinner $! "Fetching IP info..."
     echo ""
     echo -e "${CYAN}System Information:${NC}"
     echo "  Hostname: $(hostname)"
@@ -418,11 +466,239 @@ show_quick_status() {
     echo "  Pending Updates: ${UPDATES} packages"
     echo ""
     echo -e "${CYAN}Network Speed:${NC}"
-    speedtest-cli --simple | grep -E "Download|Upload"
+    (speedtest-cli --simple | grep -E "Download|Upload") &
+    spinner $! "Running speed test..."
     echo ""
     echo -e "${CYAN}Disk Usage:${NC}"
     df -h | grep -E "^/dev/|Filesystem"
 }
+
+# --- SECURITY SCORE & AUDIT FUNCTIONS ---
+calculate_security_score() {
+    local score=100
+
+    # Firewall: -25 if inactive, -15 if insecure default
+    if ! sudo ufw status | grep -q "Status: active"; then
+        score=$((score - 25))
+    elif ! sudo ufw status verbose | grep -q "Default: deny (incoming)"; then
+        score=$((score - 15))
+    fi
+
+    # Updates: -1 point per 2 pending updates, capped at -20
+    local updates=$(apt list --upgradable 2>/dev/null | grep -vc "Listing...")
+    local update_penalty=$((updates / 2))
+    if [ "$update_penalty" -gt 20 ]; then update_penalty=20; fi
+    score=$((score - update_penalty))
+
+    # SSH Root Login: -25 if enabled and file exists
+    if [ -f /etc/ssh/sshd_config ]; then
+        if sudo grep -qE "^\s*PermitRootLogin\s+yes" /etc/ssh/sshd_config; then
+            score=$((score - 25))
+        fi
+    fi
+
+    # Antivirus DB: -15 if very old, -5 if stale
+    local db_file=$(sudo find /var/lib/clamav/ -name "*.cvd" -printf "%T@ %p\n" 2>/dev/null | sort -n | tail -1 | cut -d' ' -f2)
+    if [ -n "$db_file" ]; then
+        local db_age=$(( ($(date +%s) - $(sudo stat -c %Y "$db_file")) / 86400 )) # Age in days
+        if [ "$db_age" -gt 7 ]; then score=$((score - 15));
+        elif [ "$db_age" -gt 2 ]; then score=$((score - 5)); fi
+    else
+        score=$((score - 10)) # Penalty if DB not found
+    fi
+    
+    # Rootkit Scan: -50 if infected
+    if sudo chkrootkit 2>/dev/null | grep -qE "INFECTED|Vulnerable"; then
+        score=$((score - 50))
+    fi
+
+    if [ "$score" -lt 0 ]; then score=0; fi
+    echo "$score"
+}
+
+get_security_recommendations() {
+    local recommendations=""
+
+    if ! sudo ufw status | grep -q "Status: active"; then
+        recommendations+="${YELLOW}- Firewall is INACTIVE.${NC} Use 'Firewall Management' (Option 2) to enable it.\n"
+    elif ! sudo ufw status verbose | grep -q "Default: deny (incoming)"; then
+        recommendations+="${YELLOW}- Firewall default policy is not secure.${NC} Use 'Firewall Management' (Option 2) to apply secure defaults.\n"
+    fi
+
+    local updates=$(apt list --upgradable 2>/dev/null | grep -vc "Listing...")
+    if [ "$updates" -gt 0 ]; then
+        recommendations+="${YELLOW}- You have $updates pending system updates.${NC} Use 'System Hardening' (Option 10) to apply them.\n"
+    fi
+
+    if [ -f /etc/ssh/sshd_config ]; then
+        if sudo grep -qE "^\s*PermitRootLogin\s+yes" /etc/ssh/sshd_config; then
+            recommendations+="${RED}- Critical: SSH root login is permitted.${NC} This is a major security risk and should be disabled in /etc/ssh/sshd_config.\n"
+        fi
+    fi
+
+    local db_file=$(sudo find /var/lib/clamav/ -name "*.cvd" -printf "%T@ %p\n" 2>/dev/null | sort -n | tail -1 | cut -d' ' -f2)
+    if [ -n "$db_file" ]; then
+        local db_age=$(( ($(date +%s) - $(sudo stat -c %Y "$db_file")) / 86400 ))
+        if [ "$db_age" -gt 7 ]; then 
+            recommendations+="${RED}- Antivirus signature database is dangerously outdated.${NC} Update it via the Antivirus setup assistant.\n"
+        elif [ "$db_age" -gt 2 ]; then
+            recommendations+="${YELLOW}- Antivirus signature database is stale.${NC} It's recommended to update it soon.\n"
+        fi
+    else
+        recommendations+="${RED}- Antivirus signature database not found!${NC} Ensure ClamAV is installed and has been updated at least once.\n"
+    fi
+
+    echo -e "$recommendations"
+}
+
+show_security_benchmark() {
+    echo -e "\n${CYAN}--- Running System Security Benchmark ---${NC}"
+    echo -e "Analyzing system..."
+
+    # CORRECTED: Run checks directly in the current shell, not a subshell
+    local score=$(calculate_security_score)
+    local recommendations=$(get_security_recommendations)
+    
+    local color=$RED
+    local remark="Poor"
+    if [ "$score" -ge 90 ]; then color=$GREEN; remark="Excellent";
+    elif [ "$score" -ge 75 ]; then color=$GREEN; remark="Good";
+    elif [ "$score" -ge 50 ]; then color=$YELLOW; remark="Average";
+    fi
+
+    local filled_len=$((score * 20 / 100))
+    local empty_len=$((20 - filled_len))
+    local filled_bar=$(printf "%${filled_len}s" | tr ' ' '█')
+    local empty_bar=$(printf "%${empty_len}s" | tr ' ' '-')
+
+    echo -e "\n--- System Security Score ---"
+    echo -e "Score: ${color}${score}/100 (${remark})${NC}"
+    echo -e "[${color}${filled_bar}${NC}${empty_bar}]"
+    
+    # Trim trailing newline from recommendations if it exists
+    recommendations=$(echo -e "$recommendations" | sed '/^$/d')
+
+    if [ -n "$recommendations" ]; then
+        echo -e "\n--- Recommendations to Improve Score ---"
+        echo -e "$recommendations"
+    else
+        echo -e "\n${GREEN}All checks passed! Your system configuration looks great.${NC}"
+    fi
+}
+
+run_security_audit() {
+    echo -e "\n${CYAN}--- Running System Security Audit ---${NC}"
+    echo "This will check several key security configurations..."
+    echo ""
+
+    # 1. Firewall Check
+    echo -e "${YELLOW}[*] Firewall Status:${NC}"
+    if sudo ufw status | grep -q "Status: active"; then
+        echo -e "    - Status: ${GREEN}ACTIVE${NC}"
+        echo -n "    - Default Incoming Policy: "
+        if sudo ufw status verbose | grep -q "Default: deny (incoming)"; then
+            echo -e "${GREEN}Secure (Deny)${NC}"
+        else
+            echo -e "${RED}INSECURE (Allow)${NC}"
+        fi
+    else
+        echo -e "    - Status: ${RED}INACTIVE${NC}"
+    fi
+
+    # 2. System Updates Check
+    echo -e "\n${YELLOW}[*] Pending System Updates:${NC}"
+    UPDATES=$(apt list --upgradable 2>/dev/null | grep -vc "Listing...")
+    if [ "$UPDATES" -eq 0 ]; then
+        echo -e "    - Status: ${GREEN}System is up-to-date.${NC}"
+    elif [ "$UPDATES" -lt 20 ]; then
+        echo -e "    - Status: ${YELLOW}$UPDATES packages need updating.${NC}"
+    else
+        echo -e "    - Status: ${RED}$UPDATES packages need updating. (High Priority)${NC}"
+    fi
+
+    # 3. SSH Hardening Check
+    echo -e "\n${YELLOW}[*] SSH Configuration:${NC}"
+    if [ -f /etc/ssh/sshd_config ]; then
+        if sudo grep -qE "^\s*PermitRootLogin\s+yes" /etc/ssh/sshd_config; then
+            echo -e "    - Root Login: ${RED}FAIL (Root login is permitted - major risk)${NC}"
+        else
+            echo -e "    - Root Login: ${GREEN}PASS (Root login is disabled)${NC}"
+        fi
+    else
+        echo -e "    - Root Login: ${GREEN}PASS (SSH server not found/installed)${NC}"
+    fi
+
+    # 4. Antivirus Database Check
+    echo -e "\n${YELLOW}[*] Antivirus Database:${NC}"
+    local db_file=$(sudo find /var/lib/clamav/ -name "*.cvd" -printf "%T@ %p\n" 2>/dev/null | sort -n | tail -1 | cut -d' ' -f2)
+    if [ -n "$db_file" ]; then
+        local db_age=$(( ($(date +%s) - $(sudo stat -c %Y "$db_file")) / 86400 )) # Age in days
+        if [ "$db_age" -gt 7 ]; then
+            echo -e "    - Status: ${RED}OUTDATED (Over 7 days old)${NC}"
+        elif [ "$db_age" -gt 2 ]; then
+            echo -e "    - Status: ${YELLOW}Stale (Over 2 days old)${NC}"
+        else
+            echo -e "    - Status: ${GREEN}Up-to-date${NC}"
+        fi
+    else
+        echo -e "    - Status: ${RED}Database not found!${NC}"
+    fi
+    
+    # 5. Rootkit Check
+    echo -e "\n${YELLOW}[*] Rootkit Scan (chkrootkit):${NC}"
+    (
+        local rootkit_result=$(sudo chkrootkit 2>/dev/null | grep -E "INFECTED|Vulnerable" | grep -v "not found")
+        if [ -n "$rootkit_result" ]; then
+            echo -e "${RED}    - WARNING: Potential rootkit or vulnerability detected!${NC}"
+            echo "$rootkit_result" | sed 's/^/        /'
+        else
+            echo -e "${GREEN}    - PASS: No obvious threats found.${NC}"
+        fi
+    ) &
+    spinner $! "Running chkrootkit..."
+
+    # 6. Listening Ports
+    echo -e "\n${YELLOW}[*] Actively Listening Network Ports (TCP):${NC}"
+    sudo ss -tlnp | sed 's/^/    /'
+    echo -e "    ${YELLOW}Review the list above. Services like telnet (port 23) or ftp (port 21) are often insecure.${NC}"
+    
+    echo -e "\n${CYAN}--- Audit Complete ---${NC}"
+}
+
+save_security_audit_report() {
+    local report_file="$REPORT_DIR/security_audit_$(date +%Y-%m-%d_%H%M%S).txt"
+    echo -e "\n${CYAN}Generating and saving security audit report...${NC}"
+    
+    # Run the audit, strip color codes, and use `tee` with sudo to write to the protected directory
+    {
+        run_security_audit
+    } 2>&1 | sed 's/\x1b\[[0-9;]*m//g' | sudo tee "$report_file" > /dev/null
+    
+    if [ $? -eq 0 ]; then
+        echo -e "${GREEN}Report saved successfully to: $report_file${NC}"
+    else
+        echo -e "${RED}Failed to save report.${NC}"
+    fi
+}
+
+run_lynis_scan() {
+    local report_file="$HOME/lynis_report_$(date +%Y-%m-%d_%H%M%S).txt"
+    echo -e "\n${CYAN}--- Running Lynis Security Audit ---${NC}"
+    echo -e "${YELLOW}This is a comprehensive scan and will run in the background.${NC}"
+    
+    (
+      # The --cronjob flag makes it non-interactive and suitable for automation
+      # We redirect stderr to the log file as well to capture any errors
+      sudo lynis audit system --cronjob --log-file "$report_file" 2>&1
+      # Change ownership of the final report to the user who ran the script
+      sudo chown $USER:$USER "$report_file"
+    ) &
+    spinner $! "Running Lynis scan..."
+
+    echo -e "\n${GREEN}Lynis scan complete.${NC}"
+    echo -e "A detailed text report has been saved to:${CYAN}\n$report_file${NC}"
+}
+
 
 manage_firewall() {
     while true; do
@@ -600,17 +876,134 @@ update_hosts_file() {
     fi
 }
 
+# --- Threat Intelligence Functions ---
+check_gsb_api() {
+    local url_to_check="$1"
+    # Don't check empty URLs
+    if [ -z "$url_to_check" ]; then return 0; fi
+    
+    local response
+    response=$(curl -s -H "Content-Type: application/json" -X POST -d \
+    '{"client":{"clientId":"nsa-script","clientVersion":"1.7.0"},"threatInfo":{"threatTypes":["MALWARE", "SOCIAL_ENGINEERING", "UNWANTED_SOFTWARE", "POTENTIALLY_HARMFUL_APPLICATION"],"platformTypes":["ANY_PLATFORM"],"threatEntryTypes":["URL"],"threatEntries":[{"url":"'"$url_to_check"'"}]}}' \
+    "https://safebrowsing.googleapis.com/v4/threatMatches:find?key=${GSB_API_KEY}")
+
+    if [ -z "$response" ] || [ "$response" == "{}" ]; then
+        return 0 # 0 means success (safe) in shell
+    else
+        return 1 # 1 means failure (dangerous)
+    fi
+}
+
 scan_threats() {
-    if [ -z "$GSB_API_KEY" ]; then echo -e "${RED}Google Safe Browsing API key not set.${NC}"; return; fi
+    if [ -z "$GSB_API_KEY" ]; then echo -e "${RED}Google Safe Browsing API key not set in the script.${NC}"; return; fi
     read -p "Enter the full URL to scan: " url_to_scan
     echo -e "${CYAN}Scanning URL...${NC}"
-    response=$(curl -s -H "Content-Type: application/json" -X POST -d '{"client":{"clientId":"nsa-script","clientVersion":"1.0.0"},"threatInfo":{"threatTypes":["MALWARE", "SOCIAL_ENGINEERING"],"platformTypes":["ANY_PLATFORM"],"threatEntryTypes":["URL"],"threatEntries":[{"url":"'"$url_to_scan"'"}]}}' "https://safebrowsing.googleapis.com/v4/threatMatches:find?key=${GSB_API_KEY}")
-    if [ -z "$response" ] || [ "$response" == "{}" ]; then
+
+    if check_gsb_api "$url_to_scan"; then
         echo -e "${GREEN}RESULT: The URL appears to be SAFE.${NC}"
     else
         echo -e "${RED}DANGER: The URL is flagged as a potential threat!${NC}"
     fi
 }
+
+scan_browser_history() {
+    if [ -z "$GSB_API_KEY" ]; then echo -e "${RED}Google Safe Browsing API key not set in the script.${NC}"; return; fi
+    echo -e "\n${CYAN}--- Scanning Browser History ---${NC}"
+    echo -e "${YELLOW}Warning: This can be very slow. For best results, close browsers before scanning.${NC}"
+    read -p "Continue? (y/n): " confirm
+    if [[ "$confirm" != "y" ]]; then echo "Cancelled."; return; fi
+
+    local found_threats=0
+    
+    # --- Scan Firefox ---
+    local firefox_db=$(find "$HOME/.mozilla/firefox/" -name "places.sqlite" -type f 2>/dev/null | head -n 1)
+    if [ -n "$firefox_db" ]; then
+        echo -e "\n${CYAN}[*] Found Firefox history database. Analyzing...${NC}"
+        # Use runuser to run sqlite3 as the actual user to avoid root permission issues on a locked file
+        # CORRECTED: Added tr -d '\r' to sanitize URLs
+        local urls=$(runuser -u $SUDO_USER -- sqlite3 -readonly "file:$firefox_db" "SELECT url FROM moz_places;" 2>/dev/null | tr -d '\r' | sort -u | grep -v '^$')
+        local total_urls=$(echo "$urls" | wc -l)
+        local count=0
+        
+        # CORRECTED: Use a 'here string' (<<<) to feed the while loop without creating a subshell
+        while IFS= read -r url; do
+            count=$((count + 1))
+            printf "\rChecking Firefox URL %d of %d..." "$count" "$total_urls"
+            if ! check_gsb_api "$url"; then
+                printf "\n" # Move to a new line before printing the threat
+                echo -e "${RED}DANGER:${NC} Malicious URL in Firefox history: ${YELLOW}$url${NC}"
+                found_threats=$((found_threats + 1))
+            fi
+        done <<< "$urls"
+        printf "\n"
+    else
+        echo -e "\n${YELLOW}[-] Firefox history not found.${NC}"
+    fi
+    
+    # --- Scan Chrome/Chromium ---
+    local chrome_db=$(find "$HOME/.config/google-chrome/" "$HOME/.config/chromium/" -name "History" -type f 2>/dev/null | head -n 1)
+    if [ -n "$chrome_db" ]; then
+        echo -e "\n${CYAN}[*] Found Chrome/Chromium history database. Analyzing...${NC}"
+        # CORRECTED: Added tr -d '\r' to sanitize URLs
+        local urls=$(runuser -u $SUDO_USER -- sqlite3 -readonly "file:$chrome_db" "SELECT url FROM urls;" 2>/dev/null | tr -d '\r' | sort -u | grep -v '^$')
+        local total_urls=$(echo "$urls" | wc -l)
+        local count=0
+
+        # CORRECTED: Use a 'here string' (<<<) to feed the while loop without creating a subshell
+        while IFS= read -r url; do
+            count=$((count + 1))
+            printf "\rChecking Chrome/Chromium URL %d of %d..." "$count" "$total_urls"
+            if ! check_gsb_api "$url"; then
+                printf "\n"
+                echo -e "${RED}DANGER:${NC} Malicious URL in Chrome/Chromium history: ${YELLOW}$url${NC}"
+                found_threats=$((found_threats + 1))
+            fi
+        done <<< "$urls"
+        printf "\n"
+    else
+        echo -e "\n${YELLOW}[-] Chrome/Chromium history not found.${NC}"
+    fi
+    
+    echo -e "\n${CYAN}--- History Scan Complete ---${NC}"
+    if [ "$found_threats" -eq 0 ]; then
+        echo -e "${GREEN}No threats found in your browser history.${NC}"
+    else
+        echo -e "${RED}Found $found_threats potential threat(s). Please review the URLs above.${NC}"
+    fi
+}
+
+show_breach_news() {
+    echo -e "\n${CYAN}--- Fetching Latest Cybersecurity News from The Hacker News ---${NC}"
+    local rss_url="https://feeds.feedburner.com/TheHackernews"
+    
+    local news
+    news=$(curl -s --max-time 10 "$rss_url")
+    
+    if [ -z "$news" ]; then
+        echo -e "${RED}Error: Could not fetch news feed. Please check your internet connection.${NC}"
+        return
+    fi
+    
+    # CORRECTED: Use a robust awk parser to handle the XML feed format reliably
+    echo "$news" | awk -v RS='</item>' '
+    /<\/title>/ && /<link>/ {
+        # Extract title
+        title = $0
+        sub(/.*<title><!\[CDATA\[/, "", title)
+        sub(/\]\]><\/title>.*/, "", title)
+
+        # Extract link
+        link = $0
+        sub(/.*<link>/, "", link)
+        sub(/<\/link>.*/, "", link)
+        
+        # Print formatted output
+        if (title != "" && link != "") {
+            print "\033[1;33m* " title "\033[0m\n  Link: " link "\n"
+        }
+    }' | head -n 5
+}
+# ---
 
 system_hardening() {
     echo -e "\n--- System Hardening & Updates ---"
@@ -656,7 +1049,20 @@ file_security_tools() {
             1) read -e -p "Enter file path to scan: " file; sudo clamscan -i "$file";;
             2) 
                 read -p "Scan entire home directory? This can be slow. (y/n): " confirm
-                if [[ "$confirm" == "y" ]]; then sudo clamscan -r -i /home; fi;;
+                if [[ "$confirm" == "y" ]]; then
+                    if command -v pv &> /dev/null; then
+                        echo -e "${CYAN}Calculating total files in /home directory...${NC}"
+                        local total_files=$(sudo find /home -type f 2>/dev/null | wc -l)
+                        echo -e "${CYAN}Starting deep scan of $total_files files...${NC}"
+                        # CORRECTED: Use xargs for robust piping to clamscan
+                        sudo find /home -type f 2>/dev/null | pv -l -s "$total_files" --name "Progress" | sudo xargs -d '\n' clamscan -i
+                    else
+                        echo -e "${YELLOW}Warning: 'pv' is not installed. Progress bar will not be shown.${NC}"
+                        echo -e "${YELLOW}For a better experience, please install it with 'sudo apt install pv'.${NC}"
+                        sudo clamscan -r -i /home
+                    fi
+                fi
+                ;;
             3) 
                 read -e -p "Enter file path to encrypt: " file; gpg -c "$file"
                 read -p "Securely delete original? (y/n): " shred
@@ -758,7 +1164,10 @@ backup_restore() {
 
 # --- Main Menu (Reorganized) ---
 while true; do
-    echo -e "\n${YELLOW}--- NSA (Network Security Assistant) | Logged in as: $CURRENT_USER ($USER_ROLE) ---${NC}"
+    local battery_info=$(get_battery_status)
+    clear
+    show_ascii_logo
+    echo -e "${YELLOW}--- NSA (Network Security Assistant) | Logged in as: $CURRENT_USER ($USER_ROLE) $battery_info---${NC}"
     echo "      Credit: Yousuf Alkhanjari"
     
     bot_status="${RED}DISABLED${NC}"
@@ -788,10 +1197,14 @@ while true; do
     echo "8. File Security Tools (Scan, Encrypt)"
     echo "9. Threat Intelligence"
     echo "10. System Hardening & Updates"
-    echo "11. Security Recommendations"
-    echo "12. Password Generator"
-    echo "13. Backup & Restore"
-    echo "14. Generate Security Reports"
+    echo "11. Run Lynis Security Scan (Advanced)"
+    echo "12. Security Recommendations"
+    echo "13. Password Generator"
+    echo "14. Backup & Restore"
+    echo "15. Generate Security Reports"
+    echo "16. View System Security Audit"
+    echo "17. Save System Security Audit Report (TXT)"
+    echo "s. Security Score & Recommendations"
     if [ "$USER_ROLE" == "admin" ]; then echo "a. Admin Tools"; fi
     echo "q. Quit"
     echo "----------------------------------------------------"
@@ -812,20 +1225,26 @@ while true; do
              echo "1. Scan URL for Threats"
              echo "2. Update Hosts Blocklist"
              echo "3. Scan Browser History for Threats"
+             echo "4. Latest Cyber Security News"
              echo "b. Back to Main Menu"
              read -p "> " tic
              case $tic in 
                 1) scan_threats;; 
                 2) update_hosts_file;; 
                 3) scan_browser_history;;
+                4) show_breach_news;;
                 b) break;; 
                 *) echo "Invalid";; 
              esac; done ;;
         10) system_hardening ;;
-        11) security_recommendations ;;
-        12) password_generator ;;
-        13) backup_restore ;;
-        14) generate_reports ;;
+        11) run_lynis_scan ;;
+        12) security_recommendations ;;
+        13) password_generator ;;
+        14) backup_restore ;;
+        15) generate_reports ;;
+        16) run_security_audit ;;
+        17) save_security_audit_report ;;
+        s) show_security_benchmark ;;
         a) if [ "$USER_ROLE" == "admin" ]; then manage_admin_tools; else echo -e "${RED}Invalid option.${NC}"; fi ;;
         q) echo "Exiting NSA. Stay safe."; exit 0 ;;
         *) echo -e "${RED}Invalid option. Please try again.${NC}";;
@@ -833,4 +1252,3 @@ while true; do
 
     read -p "Press Enter to continue..."
 done
-
