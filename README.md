@@ -6,7 +6,7 @@ A powerful, all-in-one, menu-driven Bash script designed to manage and enhance t
 
 ### **Philosophy**
 
-The NSA Toolkit was created to bridge the gap between powerful, complex command-line security tools and the everyday user. Security should be accessible to everyone. This script takes a suite of best-in-class open-source security software and centralizes them into a single, user-friendly interface that empowers users to take control of their system's defense.
+The NSA Toolkit was created to bridge the gap between powerful, complex command-line security tools and the everyday user. Security should be accessible to everyone. This script takes a suite of best-in-class open-source security software and centralizes them into a single, user-friendly interface that empowers users to take control of their system's defense. With a dashboard-like header, progress indicators for long tasks, and clear menus, it's designed for both new and experienced users.
 
 ### **What It Is For**
 
@@ -18,6 +18,7 @@ This toolkit is designed for any Linux user who wants to:
 * **Automate** routine security checks and receive alerts.  
 * **Manage** users, firewalls, and data security from one place.  
 * **Learn** more about their system's security posture.
+  
 
 ### **Key Features**
 
@@ -46,6 +47,18 @@ The toolkit is organized into several powerful modules:
 * **Security Reports:** Generate historical reports on firewall blocks, successful logins, and failed login attempts to identify patterns and potential threats.  
 * **Automated CSV Reporting:** An optional bot that generates CSV reports of firewall blocks and failed logins every 5 minutes for easy analysis.  
 * **Quick Status Dashboard:** An all-in-one dashboard showing your public IP, firewall status, pending updates, internet speed, disk usage, and more.
+
+#### **📊 Auditing & Reporting**
+* **Security Benchmark:** Provides an instant 0-100 security score based on a series of automated checks. More importantly, it generates a list of actionable recommendations to help you strengthen your system's configuration.
+
+* **Advanced Lynis Audit:** Integrates the professional-grade Lynis tool for a deep, comprehensive security audit of your entire system. A detailed report is automatically saved to your home directory for review.
+
+* **Live Monitoring Hub:** Open separate, dedicated terminal windows to watch live logs for the firewall, user logins, system events, and bot activity without interrupting your workflow.
+
+* **Security Reports:** Generate historical reports on firewall blocks, successful logins, and failed login attempts to identify patterns and potential threats.
+
+* **Quick Status Dashboard:** An all-in-one dashboard showing your public IP, firewall status, pending updates, internet speed, disk usage, and even your laptop's battery status.
+
 
 #### **⚙️ System & User Management**
 
@@ -78,6 +91,7 @@ The script is designed to be self-contained and easy to set up.
    * Finally, it will prompt you to create the initial **admin** user account.  
 3. **Login:** After the first run, you will always be greeted by a secure login prompt.  
 4. **Navigate the Menus:** Simply use the number keys to navigate through the various tools and options.
+5. **google api:** you will need google api for safe browsing scan.
 
 ### **Disclaimer**
 
